@@ -26,6 +26,7 @@ jobs:
                 - path: Sources/iPhoneVR
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.drgsrftg.iPhoneVR
+                GENERATE_INFOPLIST_FILE: YES
                 INFOPLIST_KEY_NSMotionUsageDescription: "Hareket sensörü VR kafa takibi için kullanılır."
                 SWIFT_VERSION: 5.9
           EOF
