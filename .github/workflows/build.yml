@@ -1,0 +1,51 @@
+name: Build iPhoneVR IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create Xcode project
+        shell: bash
+        run: |
+          cat > Package.swift <<'EOF'
+          // swift-tools-version: 5.9
+          import PackageDescription
+          let package = Package(
+              name: "iPhoneVR",
+              platforms: [.iOS(.v16)],
+              products: [.library(name: "iPhoneVR", targets: ["iPhoneVR"])],
+              targets: [.target(name: "iPhoneVR", path: ".")]
+          )
+          EOF
+          mkdir -p Sources/iPhoneVR
+          cp ContentView.swift Sources/iPhoneVR/ContentView.swift
+          swift package generate-xcodeproj || true
+          cat > Sources/iPhoneVR/iPhoneVRApp.swift <<'EOF'
+          import SwiftUI
+          @main
+          struct iPhoneVRApp: App {
+              var body: some Scene { WindowGroup { ContentView() } }
+          }
+          EOF
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -scheme iPhoneVR -sdk iphoneos -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/iPhoneVR.app Payload/
+          zip -r iPhoneVR.ipa Payload
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: iPhoneVR-IPA
+          path: iPhoneVR.ipa
