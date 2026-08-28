@@ -5,44 +5,61 @@ on:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Create Xcode project
-        shell: bash
         run: |
-          cat > Package.swift <<'EOF'
-          // swift-tools-version: 5.9
-          import PackageDescription
-          let package = Package(
-              name: "iPhoneVR",
-              platforms: [.iOS(.v16)],
-              products: [.library(name: "iPhoneVR", targets: ["iPhoneVR"])],
-              targets: [.target(name: "iPhoneVR", path: ".")]
-          )
+          cat > project.yml <<'EOF'
+          name: iPhoneVR
+          options:
+            bundleIdPrefix: com.drgsrftg
+            deploymentTarget:
+              iOS: "16.0"
+          targets:
+            iPhoneVR:
+              type: application
+              platform: iOS
+              sources:
+                - path: Sources/iPhoneVR
+              settings:
+                PRODUCT_BUNDLE_IDENTIFIER: com.drgsrftg.iPhoneVR
+                INFOPLIST_KEY_NSMotionUsageDescription: "Hareket sensörü VR kafa takibi için kullanılır."
+                SWIFT_VERSION: 5.9
           EOF
           mkdir -p Sources/iPhoneVR
           cp ContentView.swift Sources/iPhoneVR/ContentView.swift
-          swift package generate-xcodeproj || true
           cat > Sources/iPhoneVR/iPhoneVRApp.swift <<'EOF'
           import SwiftUI
           @main
           struct iPhoneVRApp: App {
-              var body: some Scene { WindowGroup { ContentView() } }
+              var body: some Scene {
+                  WindowGroup { ContentView() }
+              }
           }
           EOF
+          brew install xcodegen
+          xcodegen generate
 
       - name: Build unsigned app
         run: |
-          xcodebuild -scheme iPhoneVR -sdk iphoneos -configuration Release -derivedDataPath build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          xcodebuild -project iPhoneVR.xcodeproj \
+            -scheme iPhoneVR \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
 
       - name: Package IPA
         run: |
-          mkdir -p Payload
+          rm -rf Payload iPhoneVR.ipa
+          mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/iPhoneVR.app Payload/
-          zip -r iPhoneVR.ipa Payload
+          zip -qry iPhoneVR.ipa Payload
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
