@@ -11,7 +11,7 @@
 
 #pragma comment(lib, "Ws2_32.lib")
 
-static constexpr unsigned short kPort = 1533;
+static constexpr unsigned short kPort = 8766;
 static constexpr float kPi = 3.14159265358979323846f;
 
 class IPhoneVRHMD final : public vr::ITrackedDeviceServerDriver {
@@ -33,14 +33,11 @@ public:
     void Deactivate() override { objectId = vr::k_unTrackedDeviceIndexInvalid; }
     void EnterStandby() override {}
     void *GetComponent(const char *) override { return nullptr; }
-    void DebugRequest(const char *, char *response, uint32_t size) override {
-        if (size) response[0] = '\0';
-    }
+    void DebugRequest(const char *, char *response, uint32_t size) override { if (size) response[0] = '\0'; }
 
     vr::DriverPose_t GetPose() override {
         std::lock_guard<std::mutex> lock(mutex);
         vr::DriverPose_t pose{};
-        pose.poseTimeOffset = 0;
         pose.result = vr::TrackingResult_Running_OK;
         pose.poseIsValid = true;
         pose.deviceIsConnected = true;
@@ -118,8 +115,7 @@ public:
         sockaddr_in from{};
         int fromLen = sizeof(from);
         for (;;) {
-            int n = recvfrom(sock, buf, sizeof(buf)-1, 0,
-                             reinterpret_cast<sockaddr*>(&from), &fromLen);
+            int n = recvfrom(sock, buf, sizeof(buf)-1, 0, reinterpret_cast<sockaddr*>(&from), &fromLen);
             if (n <= 0) break;
             buf[n] = '\0';
             float y, p, r;
