@@ -7,19 +7,18 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black
-                .ignoresSafeArea()
+            Color.black.ignoresSafeArea()
 
             if running {
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
-                        eye(size: CGSize(
-                            width: geometry.size.width / 2.0,
+                        eye(side: .left, size: CGSize(
+                            width: geometry.size.width / 2,
                             height: geometry.size.height
                         ))
 
-                        eye(size: CGSize(
-                            width: geometry.size.width / 2.0,
+                        eye(side: .right, size: CGSize(
+                            width: geometry.size.width / 2,
                             height: geometry.size.height
                         ))
                     }
@@ -27,36 +26,24 @@ struct ContentView: View {
                         width: geometry.size.width,
                         height: geometry.size.height
                     )
-                    .clipped()
                 }
                 .ignoresSafeArea(.all)
 
-                // Only the close button remains. No center button.
                 VStack {
                     HStack {
                         Spacer()
-
                         Button {
                             client.stop()
                             running = false
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(
-                                    size: 16,
-                                    weight: .bold
-                                ))
+                                .font(.system(size: 16, weight: .bold))
                                 .foregroundStyle(.white)
-                                .frame(
-                                    width: 42,
-                                    height: 42
-                                )
-                                .background(
-                                    Color.black.opacity(0.55)
-                                )
+                                .frame(width: 42, height: 42)
+                                .background(Color.black.opacity(0.55))
                                 .clipShape(Circle())
                         }
                     }
-
                     Spacer()
                 }
                 .padding(12)
@@ -70,13 +57,10 @@ struct ContentView: View {
                     Text("PC ekranını iPhone'da VR olarak kullan")
                         .foregroundStyle(.gray)
 
-                    TextField(
-                        "PC IP adresi",
-                        text: $ip
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .keyboardType(.numbersAndPunctuation)
-                    .frame(maxWidth: 320)
+                    TextField("PC IP adresi", text: $ip)
+                        .textFieldStyle(.roundedBorder)
+                        .keyboardType(.numbersAndPunctuation)
+                        .frame(maxWidth: 320)
 
                     Button("BAĞLAN") {
                         client.start(ip: ip)
@@ -95,22 +79,42 @@ struct ContentView: View {
         }
     }
 
+    private enum EyeSide {
+        case left
+        case right
+    }
+
     @ViewBuilder
-    private func eye(size: CGSize) -> some View {
-        if let image = client.image {
-            Image(uiImage: image)
+    private func eye(side: EyeSide, size: CGSize) -> some View {
+        if let image = client.image,
+           let cg = image.cgImage {
+            let width = cg.width
+            let height = cg.height
+            let half = width / 2
+
+            let rect: CGRect
+            switch side {
+            case .left:
+                rect = CGRect(x: 0, y: 0, width: half, height: height)
+            case .right:
+                rect = CGRect(x: half, y: 0, width: width - half, height: height)
+            }
+
+            if let cropped = cg.cropping(to: rect) {
+                Image(uiImage: UIImage(
+                    cgImage: cropped,
+                    scale: image.scale,
+                    orientation: image.imageOrientation
+                ))
                 .resizable()
-                .frame(
-                    width: size.width,
-                    height: size.height
-                )
+                .frame(width: size.width, height: size.height)
                 .clipped()
+            } else {
+                Color.black
+            }
         } else {
             Color.black
-                .frame(
-                    width: size.width,
-                    height: size.height
-                )
+                .frame(width: size.width, height: size.height)
         }
     }
 }
