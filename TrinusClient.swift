@@ -2,6 +2,7 @@ import Foundation
 import Network
 import CoreMotion
 import UIKit
+import CryptoKit
 
 final class TrinusClient: ObservableObject {
     @Published var image: UIImage?
@@ -13,30 +14,52 @@ final class TrinusClient: ObservableObject {
     private let motion = CMMotionManager()
     private var video: NWConnection?
     private var sensor: NWConnection?
-    private var buffer = Data()
+    private var videoBuffer = Data()
+    private var settingsBuffer = Data()
     private var running = false
     private var host = ""
+
     private var cy = 0.0
     private var cp = 0.0
     private var cr = 0.0
 
+    private let videoPort: NWEndpoint.Port = 7777
+    private let sensorPort: NWEndpoint.Port = 5555
+
     func start(ip: String) {
-        stop()
+        stop(silent: true)
+
         host = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !host.isEmpty else {
+            status = "PC IP adresi gerekli"
+            return
+        }
+
         running = true
         status = "Trinus'a bağlanıyor..."
+
         connectVideo()
         connectSensor()
         startMotion()
     }
 
     func stop() {
+        stop(silent: false)
+    }
+
+    private func stop(silent: Bool) {
         running = false
-        video?.cancel(); video = nil
-        sensor?.cancel(); sensor = nil
-        buffer.removeAll()
+        video?.cancel()
+        sensor?.cancel()
+        video = nil
+        sensor = nil
+        videoBuffer.removeAll(keepingCapacity: false)
+        settingsBuffer.removeAll(keepingCapacity: false)
         motion.stopDeviceMotionUpdates()
-        DispatchQueue.main.async { self.status = "Durduruldu" }
+
+        if !silent {
+            DispatchQueue.main.async { self.status = "Durduruldu" }
+        }
     }
 
     func center() {
@@ -46,141 +69,308 @@ final class TrinusClient: ObservableObject {
         cr = d.attitude.roll
     }
 
+    // MARK: - Trinus video connection (TCP 7777)
+
     private func connectVideo() {
-        guard let port = NWEndpoint.Port(rawValue: 7777) else { return }
-        let c = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let c = NWConnection(
+            host: NWEndpoint.Host(host),
+            port: videoPort,
+            using: .tcp
+        )
         video = c
-        c.stateUpdateHandler = { [weak self] s in
+
+        c.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
             DispatchQueue.main.async {
-                if case .ready = s {
-                    self?.status = "Trinus görüntü bağlı"
-                    self?.readSettings()
-                }
-                if case .failed = s {
-                    self?.status = "Trinus 7777 bağlantısı başarısız"
+                switch state {
+                case .ready:
+                    self.status = "Trinus 7777 bağlı"
+                    self.readSettings()
+                case .failed(let error):
+                    self.status = "Trinus 7777 hata: \(error.localizedDescription)"
+                case .cancelled:
+                    break
+                default:
+                    break
                 }
             }
         }
+
         c.start(queue: .global(qos: .userInteractive))
     }
 
     private func readSettings() {
-        video?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, _, error in
+        guard running, let video else { return }
+
+        video.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
             guard let self, self.running else { return }
-            if let data, !data.isEmpty { self.sendSettings() }
-            if error == nil { self.readVideo() }
+
+            if let data, !data.isEmpty {
+                self.settingsBuffer.append(data)
+
+                // Settings is a small JSON object. Wait until the complete JSON object
+                // is present before calculating the Trinus handshake code.
+                if let end = self.settingsBuffer.firstIndex(of: UInt8(ascii: "}")) {
+                    let jsonData = self.settingsBuffer.subdata(in: 0...end)
+                    self.settingsBuffer.removeSubrange(0...end)
+                    self.handleSettings(jsonData)
+                    return
+                }
+            }
+
+            if isComplete {
+                self.failVideo("Trinus settings bağlantısı kapandı")
+            } else if error == nil {
+                self.readSettings()
+            } else {
+                self.failVideo("Trinus settings alınamadı")
+            }
         }
     }
 
-    private func sendSettings() {
-        let obj: [String: Any] = [
-            "version": "std2", "videostream": "mjpeg", "sensorstream": "normal",
-            "sensorport": 5555, "sensorVersion": 1, "motionboost": false,
-            "nolens": false, "convertimage": false, "fakeroll": false,
-            "source": "None", "project": "iPhoneVR", "proc": "None", "stroverlay": ""
-        ]
-        guard let d = try? JSONSerialization.data(withJSONObject: obj) else { return }
-        video?.send(content: d, completion: .contentProcessed { _ in })
+    private func handleSettings(_ data: Data) {
+        guard running else { return }
+
+        do {
+            guard
+                let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                let ref = obj["ref"] as? String
+            else {
+                failVideo("Trinus settings geçersiz")
+                return
+            }
+
+            let module = "_defaulttglibva"
+            let code = makeTrinusCode(ref: ref, module: module)
+
+            let settings: [String: Any] = [
+                "version": "std2",
+                "code": code,
+                "videostream": "mjpeg",
+                "sensorstream": "normal",
+                "sensorport": 5555,
+                "sensorVersion": 1,
+                "motionboost": false,
+                "nolens": false,
+                "convertimage": false,
+                "fakeroll": false,
+                "source": "None",
+                "project": "iPhoneVR",
+                "proc": "None",
+                "stroverlay": ""
+            ]
+
+            let out = try JSONSerialization.data(withJSONObject: settings)
+            video?.send(content: out, completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.failVideo("Trinus handshake gönderilemedi: \(error.localizedDescription)")
+                    return
+                }
+
+                DispatchQueue.main.async {
+                    self.status = "Trinus bağlı • görüntü bekleniyor"
+                }
+
+                // LinusTrinus/Trinus Sender waits for an 'e' byte from the client
+                // before sending each JPEG frame.
+                self.readVideo()
+                self.requestNextFrame()
+            })
+        } catch {
+            failVideo("Trinus settings işlenemedi")
+        }
+    }
+
+    private func requestNextFrame() {
+        guard running else { return }
+        video?.send(content: Data([0x65]), completion: .contentProcessed { [weak self] error in
+            if let error {
+                self?.failVideo("Frame isteği gönderilemedi: \(error.localizedDescription)")
+            }
+        })
     }
 
     private func readVideo() {
-        video?.receive(minimumIncompleteLength: 1, maximumLength: 262144) { [weak self] data, _, _, error in
+        guard running, let video else { return }
+
+        video.receive(minimumIncompleteLength: 1, maximumLength: 262144) { [weak self] data, _, isComplete, error in
             guard let self, self.running else { return }
+
             if let data, !data.isEmpty {
-                self.buffer.append(data)
+                self.videoBuffer.append(data)
                 self.decodeFrames()
             }
-            if error == nil { self.readVideo() }
+
+            if isComplete {
+                self.failVideo("Trinus görüntü bağlantısı kapandı")
+            } else if error == nil {
+                self.readVideo()
+            } else {
+                self.failVideo("Trinus görüntü alınamadı")
+            }
         }
     }
 
     private func decodeFrames() {
-        while buffer.count >= 4 {
-            let n = Int(buffer[0]) << 24 | Int(buffer[1]) << 16 | Int(buffer[2]) << 8 | Int(buffer[3])
-            guard n > 0 && n < 20_000_000 else {
-                buffer.removeAll()
+        while videoBuffer.count >= 4 {
+            let n = Int(videoBuffer[0]) << 24
+                | Int(videoBuffer[1]) << 16
+                | Int(videoBuffer[2]) << 8
+                | Int(videoBuffer[3])
+
+            guard n > 0, n <= 20_000_000 else {
+                videoBuffer.removeAll(keepingCapacity: false)
                 return
             }
-            guard buffer.count >= n + 4 else { return }
-            let d = buffer.subdata(in: 4..<(n + 4))
-            buffer.removeSubrange(0..<(n + 4))
-            if let im = UIImage(data: d) {
-                DispatchQueue.main.async { self.image = im }
+
+            guard videoBuffer.count >= n + 4 else { return }
+
+            let frame = videoBuffer.subdata(in: 4..<(n + 4))
+            videoBuffer.removeSubrange(0..<(n + 4))
+
+            if let im = UIImage(data: frame) {
+                DispatchQueue.main.async {
+                    self.image = im
+                    self.status = "Trinus bağlı • görüntü + sensör"
+                }
             }
+
+            // Request the next frame only after the current frame was consumed.
+            requestNextFrame()
         }
     }
 
+    private func failVideo(_ message: String) {
+        guard running else { return }
+        DispatchQueue.main.async {
+            self.status = message
+        }
+    }
+
+    // MARK: - Trinus sensor connection (TCP 5555)
+
     private func connectSensor() {
-        guard let port = NWEndpoint.Port(rawValue: 5555) else { return }
-        let c = NWConnection(host: NWEndpoint.Host(host), port: port, using: .tcp)
+        let c = NWConnection(
+            host: NWEndpoint.Host(host),
+            port: sensorPort,
+            using: .tcp
+        )
         sensor = c
-        c.stateUpdateHandler = { [weak self] s in
-            if case .ready = s {
+
+        c.stateUpdateHandler = { [weak self] state in
+            guard let self else { return }
+            if case .ready = state {
                 DispatchQueue.main.async {
-                    self?.status = "Trinus bağlı • görüntü + sensör"
+                    if self.running {
+                        self.status = "Trinus sensör bağlı"
+                    }
                 }
             }
         }
+
         c.start(queue: .global(qos: .userInteractive))
     }
 
-    private func startMotion() {
-        guard motion.isDeviceMotionAvailable else { return }
-        motion.deviceMotionUpdateInterval = 1.0 / 60.0
-        motion.startDeviceMotionUpdates(using: .xArbitraryCorrectedZVertical, to: OperationQueue()) { [weak self] d, _ in
-            guard let self, let d, self.running else { return }
+    // MARK: - iPhone motion
 
-            let a = d.attitude
+    private func startMotion() {
+        guard motion.isDeviceMotionAvailable else {
+            DispatchQueue.main.async { self.status = "DeviceMotion kullanılamıyor" }
+            return
+        }
+
+        motion.deviceMotionUpdateInterval = 1.0 / 60.0
+
+        motion.startDeviceMotionUpdates(
+            using: .xArbitraryCorrectedZVertical,
+            to: OperationQueue()
+        ) { [weak self] deviceMotion, error in
+            guard let self, let dm = deviceMotion, self.running, error == nil else { return }
+
+            let a = dm.attitude
             let q = a.quaternion
+
             let y = a.yaw - self.cy
             let p = a.pitch - self.cp
             let r = a.roll - self.cr
 
             DispatchQueue.main.async {
-                self.yaw = y * 180 / .pi
-                self.pitch = p * 180 / .pi
-                self.roll = r * 180 / .pi
+                self.yaw = y * 180.0 / .pi
+                self.pitch = p * 180.0 / .pi
+                self.roll = r * 180.0 / .pi
             }
 
             self.sendSensor(
-                y: y,
-                p: p,
-                r: r,
-                q: q,
-                rotationRate: d.rotationRate
+                yaw: y,
+                pitch: p,
+                roll: r,
+                quaternion: q,
+                accel: dm.userAcceleration
             )
         }
     }
 
+    // LinusTrinus sensor_client.py expects 53 bytes:
+    // 3b header + 2b speed + 2f axisXY + 3f Euler + 4f quaternion + 3f accel.
     private func sendSensor(
-        y: Double,
-        p: Double,
-        r: Double,
-        q: CMQuaternion,
-        rotationRate: CMRotationRate
+        yaw: Double,
+        pitch: Double,
+        roll: Double,
+        quaternion q: CMQuaternion,
+        accel: CMAcceleration
     ) {
-        var d = Data(repeating: 0, count: 5)
+        guard running else { return }
 
-        appendFloat(&d, Float(0))
-        appendFloat(&d, Float(0))
-        appendFloat(&d, Float(y))
-        appendFloat(&d, Float(p))
-        appendFloat(&d, Float(r))
-        appendFloat(&d, Float(q.x))
-        appendFloat(&d, Float(q.y))
-        appendFloat(&d, Float(q.z))
-        appendFloat(&d, Float(q.w))
+        var packet = Data()
+        packet.reserveCapacity(53)
 
-        // rotationRate CMAttitude'ta değil, CMDeviceMotion'dadır.
-        appendFloat(&d, Float(rotationRate.x))
-        appendFloat(&d, Float(rotationRate.y))
-        appendFloat(&d, Float(rotationRate.z))
+        // crc, reserved, trigger
+        packet.append(0)
+        packet.append(0)
+        packet.append(0)
 
-        sensor?.send(content: d, completion: .contentProcessed { _ in })
+        // speed: 2 signed bytes
+        packet.append(0)
+        packet.append(0)
+
+        // axisXY: 2 float32
+        appendFloatLE(&packet, 0)
+        appendFloatLE(&packet, 0)
+
+        // Euler: 3 float32
+        appendFloatLE(&packet, Float(yaw))
+        appendFloatLE(&packet, Float(pitch))
+        appendFloatLE(&packet, Float(roll))
+
+        // Quaternion: 4 float32
+        appendFloatLE(&packet, Float(q.x))
+        appendFloatLE(&packet, Float(q.y))
+        appendFloatLE(&packet, Float(q.z))
+        appendFloatLE(&packet, Float(q.w))
+
+        // Acceleration: 3 float32
+        appendFloatLE(&packet, Float(accel.x))
+        appendFloatLE(&packet, Float(accel.y))
+        appendFloatLE(&packet, Float(accel.z))
+
+        guard packet.count == 53 else { return }
+
+        sensor?.send(content: packet, completion: .contentProcessed { _ in })
     }
 
-    private func appendFloat(_ d: inout Data, _ x: Float) {
-        var v = x
-        withUnsafeBytes(of: &v) { d.append(contentsOf: $0) }
+    private func appendFloatLE(_ data: inout Data, _ value: Float) {
+        var bits = value.bitPattern.littleEndian
+        withUnsafeBytes(of: &bits) { raw in
+            data.append(contentsOf: raw)
+        }
+    }
+
+    // LinusTrinus Sender.ch_summ():
+    // Base64(SHA1(ref + module)) + module
+    private func makeTrinusCode(ref: String, module: String) -> String {
+        let input = Data((ref + module).utf8)
+        let digest = Insecure.SHA1.hash(data: input)
+        return Data(digest).base64EncodedString() + module
     }
 }
