@@ -48,18 +48,14 @@ final class TrinusClient: ObservableObject {
 
     private func stop(silent: Bool) {
         running = false
-
         frameTimer?.cancel()
         frameTimer = nil
-
         video?.cancel()
         sensorConnection?.cancel()
         sensorListener?.cancel()
-
         video = nil
         sensorConnection = nil
         sensorListener = nil
-
         motion.stopDeviceMotionUpdates()
 
         if !silent {
@@ -90,7 +86,6 @@ final class TrinusClient: ObservableObject {
                     guard self.running else { return }
                     self.status = "iPhoneVR UDP 7777 bağlı"
                 }
-
                 self.sendUDPSettings()
                 self.startFrameRequests()
 
@@ -140,24 +135,16 @@ final class TrinusClient: ObservableObject {
         }
     }
 
-    // Sürekli frame istemek, UDP'de tek bir paketin kaybolması halinde
-    // görüntünün ilk karede takılı kalmasını engeller.
     private func startFrameRequests() {
         frameTimer?.cancel()
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
         frameTimer = timer
 
-        timer.schedule(
-            deadline: .now(),
-            repeating: .milliseconds(33),
-            leeway: .milliseconds(2)
-        )
-
+        timer.schedule(deadline: .now(), repeating: .milliseconds(33), leeway: .milliseconds(2))
         timer.setEventHandler { [weak self] in
             self?.requestFrame()
         }
-
         timer.resume()
     }
 
@@ -191,7 +178,6 @@ final class TrinusClient: ObservableObject {
     }
 
     private func handleVideoDatagram(_ data: Data) {
-        // Server'ın JSON handshake/control cevabı.
         if data.first == UInt8(ascii: "{") {
             return
         }
@@ -204,7 +190,6 @@ final class TrinusClient: ObservableObject {
             (Int(data[2]) << 8) |
             Int(data[3])
 
-        // Bu server tek UDP datagramında 4-byte uzunluk + JPEG gönderiyor.
         guard jpegLength > 0,
               jpegLength <= data.count - 4 else {
             return
@@ -247,7 +232,6 @@ final class TrinusClient: ObservableObject {
 
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
-
                 if case .failed(let error) = state {
                     DispatchQueue.main.async {
                         if self.running {
@@ -298,6 +282,12 @@ final class TrinusClient: ObservableObject {
 
         motion.deviceMotionUpdateInterval = 1.0 / 60.0
 
+        // Yaw/pitch değerlerini doğrudan CoreMotion'ın Euler açılarıyla
+        // kullanmıyoruz. Telefon VR gözlüğünde 90 derece döndürülmüş
+        // durumda olduğundan Euler yaw/pitch birbirine karışabiliyor.
+        // Bunun yerine cihazın ileri yönünü quaternion/matris üzerinden
+        // çıkarıp dünya dikeyine göre gerçek yatay+dikey bakış açısını
+        // hesaplıyoruz.
         motion.startDeviceMotionUpdates(
             using: .xArbitraryCorrectedZVertical,
             to: OperationQueue()
@@ -307,27 +297,62 @@ final class TrinusClient: ObservableObject {
                   self.running,
                   error == nil else { return }
 
-            let a = dm.attitude
-            let q = a.quaternion
+            let q = dm.attitude.quaternion
 
-            let y = a.yaw - self.cy
-            let p = a.pitch - self.cp
-            let r = a.roll - self.cr
+            let forward = self.forwardVector(from: q)
+            let flatLength = sqrt(forward.x * forward.x + forward.z * forward.z)
+
+            guard flatLength > 0.0001 else { return }
+
+            // Dünya koordinatında gerçek bakış yönünden iki bağımsız açı.
+            var measuredYaw = atan2(forward.x, forward.z)
+            var measuredPitch = atan2(forward.y, flatLength)
+
+            // Merkezleme, her iki ekseni aynı referans noktasından başlatır.
+            measuredYaw -= cy
+            measuredPitch -= cp
+
+            // -pi/+pi geçişini düzelt.
+            measuredYaw = normalizedAngle(measuredYaw)
+            measuredPitch = normalizedAngle(measuredPitch)
 
             DispatchQueue.main.async {
-                self.yaw = y * 180.0 / .pi
-                self.pitch = p * 180.0 / .pi
-                self.roll = r * 180.0 / .pi
+                self.yaw = measuredYaw * 180.0 / .pi
+                self.pitch = measuredPitch * 180.0 / .pi
+                self.roll = dm.attitude.roll * 180.0 / .pi
             }
 
             self.sendSensor(
-                yaw: y,
-                pitch: p,
-                roll: r,
+                yaw: measuredYaw,
+                pitch: measuredPitch,
+                roll: dm.attitude.roll - cr,
                 quaternion: q,
                 accel: dm.userAcceleration
             )
         }
+    }
+
+    // CoreMotion quaternion -> cihazın optik ileri yönü.
+    // iPhone ekranının ön tarafını -Z kabul ediyoruz.
+    private func forwardVector(from q: CMQuaternion) -> (x: Double, y: Double, z: Double) {
+        let x = q.x
+        let y = q.y
+        let z = q.z
+        let w = q.w
+
+        // R * (0, 0, -1)
+        let fx = -2.0 * (x * z + w * y)
+        let fy = -2.0 * (y * z - w * x)
+        let fz = -(1.0 - 2.0 * (x * x + y * y))
+
+        return (fx, fy, fz)
+    }
+
+    private func normalizedAngle(_ angle: Double) -> Double {
+        var value = angle
+        while value > .pi { value -= 2.0 * .pi }
+        while value < -.pi { value += 2.0 * .pi }
+        return value
     }
 
     private func sendSensor(
@@ -373,8 +398,12 @@ final class TrinusClient: ObservableObject {
 
     func center() {
         guard let d = motion.deviceMotion else { return }
-        cy = d.attitude.yaw
-        cp = d.attitude.pitch
+        let forward = forwardVector(from: d.attitude.quaternion)
+        let flatLength = sqrt(forward.x * forward.x + forward.z * forward.z)
+        guard flatLength > 0.0001 else { return }
+
+        cy = atan2(forward.x, forward.z)
+        cp = atan2(forward.y, flatLength)
         cr = d.attitude.roll
     }
 }
