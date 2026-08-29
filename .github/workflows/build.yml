@@ -10,8 +10,57 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
       - name: Create Xcode project
+        shell: bash
         run: |
+          mkdir -p Sources/iPhoneVR
+          cp ContentView.swift Sources/iPhoneVR/ContentView.swift
+
+          cat > Sources/iPhoneVR/iPhoneVRApp.swift <<'EOF'
+          import SwiftUI
+
+          @main
+          struct iPhoneVRApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+          cat > Sources/iPhoneVR/Info.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleDisplayName</key>
+              <string>iPhoneVR</string>
+              <key>CFBundleExecutable</key>
+              <string>$(EXECUTABLE_NAME)</string>
+              <key>CFBundleIdentifier</key>
+              <string>com.drgsrftg.iPhoneVR</string>
+              <key>CFBundleName</key>
+              <string>iPhoneVR</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+              <key>LSRequiresIPhoneOS</key>
+              <true/>
+              <key>NSMotionUsageDescription</key>
+              <string>Hareket sensörü VR kafa takibi için kullanılır.</string>
+              <key>UILaunchScreen</key>
+              <dict/>
+          </dict>
+          </plist>
+          EOF
+
           cat > project.yml <<'EOF'
           name: iPhoneVR
           options:
@@ -26,43 +75,47 @@ jobs:
                 - path: Sources/iPhoneVR
               settings:
                 PRODUCT_BUNDLE_IDENTIFIER: com.drgsrftg.iPhoneVR
-                INFOPLIST_FILE: MotionInfo.plist
+                INFOPLIST_FILE: Sources/iPhoneVR/Info.plist
                 SWIFT_VERSION: 5.9
+                TARGETED_DEVICE_FAMILY: "1,2"
+                GENERATE_INFOPLIST_FILE: NO
           EOF
-          mkdir -p Sources/iPhoneVR
-          cp ContentView.swift Sources/iPhoneVR/ContentView.swift
-          cat > Sources/iPhoneVR/iPhoneVRApp.swift <<'EOF'
-          import SwiftUI
-          @main
-          struct iPhoneVRApp: App {
-              var body: some Scene {
-                  WindowGroup { ContentView() }
-              }
-          }
-          EOF
-          brew install xcodegen
+
           xcodegen generate
 
       - name: Build unsigned app
+        shell: bash
         run: |
-          xcodebuild -project iPhoneVR.xcodeproj \
+          rm -rf build Payload iPhoneVR.ipa
+          xcodebuild \
+            -project iPhoneVR.xcodeproj \
             -scheme iPhoneVR \
-            -sdk iphoneos \
             -configuration Release \
+            -sdk iphoneos \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM=""
 
-      - name: Package IPA
+      - name: Create standard IPA
+        shell: bash
         run: |
-          rm -rf Payload iPhoneVR.ipa
-          mkdir Payload
-          cp -R build/Build/Products/Release-iphoneos/iPhoneVR.app Payload/
-          zip -qry iPhoneVR.ipa Payload
+          APP="build/Build/Products/Release-iphoneos/iPhoneVR.app"
+          test -d "$APP"
+          test -f "$APP/Info.plist"
+          test -f "$APP/iPhoneVR"
+
+          mkdir -p Payload
+          ditto "$APP" "Payload/iPhoneVR.app"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" Payload/iPhoneVR.app/Info.plist
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" Payload/iPhoneVR.app/Info.plist
+          zip -qry -X iPhoneVR.ipa Payload
+          unzip -tq iPhoneVR.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
           name: iPhoneVR-IPA
           path: iPhoneVR.ipa
+          if-no-files-found: error
