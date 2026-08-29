@@ -1,0 +1,10 @@
+{
+  "name": "iphonevr",
+  "resourceOnly": false,
+  "hmd_presence": [
+    "bin/win64/driver_iPhoneVR.dll"
+  ],
+  "interface": {
+    "IServerTrackedDeviceProvider": "HmdDriverFactory"
+  }
+}
