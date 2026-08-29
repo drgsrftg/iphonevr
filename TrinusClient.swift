@@ -24,6 +24,8 @@ final class TrinusClient: ObservableObject {
     private var cp = 0.0
     private var cr = 0.0
 
+    // Trinus Windows server exposes its 7777 endpoint as UDP.
+    // The sensor callback remains TCP on 5555, as requested by the handshake.
     private let videoPort: NWEndpoint.Port = 7777
     private let sensorPort: NWEndpoint.Port = 5555
 
@@ -32,14 +34,10 @@ final class TrinusClient: ObservableObject {
         host = ip.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !host.isEmpty else { status = "PC IP adresi gerekli"; return }
         running = true
-        status = "Trinus'a bağlanıyor..."
+        status = "Trinus UDP'ye bağlanıyor..."
 
-        // Trinus video/control connection: iPhone connects to Windows server.
-        connectVideo()
-
-        // Trinus sensor connection: Windows server connects back to iPhone on sensorport.
+        connectVideoUDP()
         startSensorServer()
-
         startMotion()
     }
 
@@ -66,20 +64,24 @@ final class TrinusClient: ObservableObject {
         cr = d.attitude.roll
     }
 
-    private func connectVideo() {
-        let c = NWConnection(host: NWEndpoint.Host(host), port: videoPort, using: .tcp)
+    // UDP 7777. NWConnection with .udp does not perform a TCP handshake;
+    // it associates the datagrams with the selected host/port.
+    private func connectVideoUDP() {
+        let c = NWConnection(host: NWEndpoint.Host(host), port: videoPort, using: .udp)
         video = c
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             DispatchQueue.main.async {
                 switch state {
                 case .ready:
-                    self.status = "Trinus 7777 bağlı"
-                    self.readSettings()
+                    self.status = "Trinus UDP 7777 hazır"
+                    // UDP has no server-side connection acknowledgement. Start by
+                    // sending the settings packet expected by the Trinus protocol.
+                    self.sendUDPSettings()
                 case .failed(let error):
-                    self.status = "Trinus 7777 hata: \(error.localizedDescription)"
+                    self.status = "Trinus UDP hata: \(error.localizedDescription)"
                 case .waiting(let error):
-                    self.status = "Trinus bekleniyor: \(error.localizedDescription)"
+                    self.status = "Trinus UDP bekleniyor: \(error.localizedDescription)"
                 default: break
                 }
             }
@@ -87,39 +89,93 @@ final class TrinusClient: ObservableObject {
         c.start(queue: .global(qos: .userInteractive))
     }
 
-    private func readSettings() {
-        guard running, let video else { return }
-        video.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, isComplete, error in
-            guard let self, self.running else { return }
-            if let data, !data.isEmpty {
-                self.settingsBuffer.append(data)
-                if let end = self.settingsBuffer.firstIndex(of: UInt8(ascii: "}")) {
-                    let endExclusive = self.settingsBuffer.index(after: end)
-                    let jsonData = self.settingsBuffer.subdata(in: 0..<endExclusive)
-                    self.settingsBuffer.removeSubrange(0..<endExclusive)
-                    self.handleSettings(jsonData)
+    private func sendUDPSettings() {
+        guard running else { return }
+        // With UDP there is no initial settings JSON to read from the server.
+        // Send the same std2 handshake used by LinusTrinus/Trinus clients.
+        // If the Windows server replies with JSON, handle it as well.
+        let settings: [String: Any] = [
+            "version": "std2",
+            "videostream": "mjpeg",
+            "sensorstream": "normal",
+            "sensorport": 5555,
+            "sensorVersion": 1,
+            "motionboost": false,
+            "nolens": false,
+            "convertimage": false,
+            "fakeroll": false,
+            "source": "None",
+            "project": "iPhoneVR",
+            "proc": "None",
+            "stroverlay": ""
+        ]
+        do {
+            let data = try JSONSerialization.data(withJSONObject: settings)
+            video?.send(content: data, completion: .contentProcessed { [weak self] error in
+                guard let self else { return }
+                if let error {
+                    self.failVideo("UDP handshake gönderilemedi: \(error.localizedDescription)")
                     return
                 }
-            }
-            if isComplete { self.failVideo("Trinus settings bağlantısı kapandı") }
-            else if error == nil { self.readSettings() }
-            else { self.failVideo("Trinus settings alınamadı") }
+                self.readUDP()
+                self.requestNextFrameUDP()
+            })
+        } catch {
+            failVideo("UDP handshake hazırlanamadı")
         }
+    }
+
+    private func requestNextFrameUDP() {
+        guard running else { return }
+        // LinusTrinus Sender waits for the byte 'e' before sending a frame.
+        video?.send(content: Data([0x65]), completion: .contentProcessed { [weak self] error in
+            if let error { self?.failVideo("UDP frame isteği gönderilemedi: \(error.localizedDescription)") }
+        })
+    }
+
+    private func readUDP() {
+        guard running, let video else { return }
+        video.receiveMessage { [weak self] data, _, _, error in
+            guard let self, self.running else { return }
+            if let error {
+                self.failVideo("Trinus UDP alınamadı: \(error.localizedDescription)")
+                return
+            }
+            if let data, !data.isEmpty {
+                self.handleUDPDatagram(data)
+            }
+            self.readUDP()
+        }
+    }
+
+    private func handleUDPDatagram(_ data: Data) {
+        // A server may answer with the initial JSON settings packet.
+        if let first = data.first, first == UInt8(ascii: "{") {
+            settingsBuffer.append(data)
+            if let end = settingsBuffer.lastIndex(of: UInt8(ascii: "}")) {
+                let endExclusive = settingsBuffer.index(after: end)
+                let jsonData = settingsBuffer.subdata(in: 0..<endExclusive)
+                settingsBuffer.removeSubrange(0..<endExclusive)
+                handleSettings(jsonData)
+            }
+            return
+        }
+
+        // Frame payloads use the same 4-byte big-endian size + MJPEG format.
+        videoBuffer.append(data)
+        decodeFrames()
     }
 
     private func handleSettings(_ data: Data) {
         guard running else { return }
         do {
-            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let ref = obj["ref"] as? String else {
+            guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 failVideo("Trinus settings geçersiz")
                 return
             }
 
-            let module = "_defaulttglibva"
-            let settings: [String: Any] = [
+            var settings: [String: Any] = [
                 "version": "std2",
-                "code": makeTrinusCode(ref: ref, module: module),
                 "videostream": "mjpeg",
                 "sensorstream": "normal",
                 "sensorport": 5555,
@@ -134,6 +190,11 @@ final class TrinusClient: ObservableObject {
                 "stroverlay": ""
             ]
 
+            if let ref = obj["ref"] as? String {
+                let module = "_defaulttglibva"
+                settings["code"] = makeTrinusCode(ref: ref, module: module)
+            }
+
             let out = try JSONSerialization.data(withJSONObject: settings)
             video?.send(content: out, completion: .contentProcessed { [weak self] error in
                 guard let self else { return }
@@ -141,33 +202,11 @@ final class TrinusClient: ObservableObject {
                     self.failVideo("Trinus handshake gönderilemedi: \(error.localizedDescription)")
                     return
                 }
-                DispatchQueue.main.async { self.status = "Trinus bağlı • görüntü bekleniyor" }
-                self.readVideo()
-                self.requestNextFrame()
+                DispatchQueue.main.async { self.status = "Trinus UDP bağlı • görüntü bekleniyor" }
+                self.requestNextFrameUDP()
             })
         } catch {
             failVideo("Trinus settings işlenemedi")
-        }
-    }
-
-    private func requestNextFrame() {
-        guard running else { return }
-        video?.send(content: Data([0x65]), completion: .contentProcessed { [weak self] error in
-            if let error { self?.failVideo("Frame isteği gönderilemedi: \(error.localizedDescription)") }
-        })
-    }
-
-    private func readVideo() {
-        guard running, let video else { return }
-        video.receive(minimumIncompleteLength: 1, maximumLength: 262144) { [weak self] data, _, isComplete, error in
-            guard let self, self.running else { return }
-            if let data, !data.isEmpty {
-                self.videoBuffer.append(data)
-                self.decodeFrames()
-            }
-            if isComplete { self.failVideo("Trinus görüntü bağlantısı kapandı") }
-            else if error == nil { self.readVideo() }
-            else { self.failVideo("Trinus görüntü alınamadı") }
         }
     }
 
@@ -178,6 +217,8 @@ final class TrinusClient: ObservableObject {
                       Int(videoBuffer[2]) << 8 |
                       Int(videoBuffer[3])
             guard n > 0, n <= 20_000_000 else {
+                // UDP can deliver a datagram containing something other than a
+                // framed image. Drop it rather than locking the decoder.
                 videoBuffer.removeAll()
                 return
             }
@@ -187,10 +228,10 @@ final class TrinusClient: ObservableObject {
             if let im = UIImage(data: frame) {
                 DispatchQueue.main.async {
                     self.image = im
-                    self.status = "Trinus bağlı • görüntü + sensör"
+                    self.status = "Trinus UDP bağlı • görüntü + sensör"
                 }
             }
-            requestNextFrame()
+            requestNextFrameUDP()
         }
     }
 
@@ -199,8 +240,7 @@ final class TrinusClient: ObservableObject {
         DispatchQueue.main.async { self.status = message }
     }
 
-    // Trinus expects the sensor port to be a callback connection:
-    // the Windows server connects to the phone on port 5555.
+    // Windows Trinus connects back to the phone using the advertised sensor port.
     private func startSensorServer() {
         do {
             let listener = try NWListener(using: .tcp, on: sensorPort)
