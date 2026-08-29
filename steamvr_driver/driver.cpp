@@ -40,7 +40,7 @@ public:
         if (size > 0) response[0] = '\0';
     }
 
-    vr::DriverPose_t GetPose() override {
+    vr::DriverPose_t GetPose() {
         std::lock_guard<std::mutex> lock(mutex);
 
         vr::DriverPose_t pose{};
@@ -48,7 +48,6 @@ public:
         pose.qWorldFromDriverRotation = {1, 0, 0, 0};
         pose.qDriverFromHeadRotation = {1, 0, 0, 0};
         pose.qRotation = rotation;
-
         pose.vecWorldFromDriverTranslation[0] = 0;
         pose.vecWorldFromDriverTranslation[1] = 0;
         pose.vecWorldFromDriverTranslation[2] = 0;
@@ -57,7 +56,6 @@ public:
         pose.vecDriverFromHeadTranslation[2] = 0;
         pose.vecVelocity[0] = pose.vecVelocity[1] = pose.vecVelocity[2] = 0;
         pose.vecAngularVelocity[0] = pose.vecAngularVelocity[1] = pose.vecAngularVelocity[2] = 0;
-
         pose.result = vr::TrackingResult_Running_OK;
         pose.poseIsValid = true;
         pose.deviceIsConnected = true;
@@ -102,27 +100,11 @@ public:
     vr::EVRInitError Init(vr::IVRDriverContext* context) override {
         VR_INIT_SERVER_DRIVER_CONTEXT(context);
 
-        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)
-            return vr::VRInitError_Driver_Failed;
+        // The HMD must be able to initialize even when the UDP port is busy.
+        // UDP is optional at startup; SteamVR should never fail initialization
+        // merely because another process owns port 8767.
+        WSAStartup(MAKEWORD(2, 2), &wsa);
         wsaStarted = true;
-
-        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (sock == INVALID_SOCKET)
-            return vr::VRInitError_Driver_Failed;
-
-        sockaddr_in addr{};
-        addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-        addr.sin_port = htons(DRIVER_PORT);
-
-        if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-            closesocket(sock);
-            sock = INVALID_SOCKET;
-            return vr::VRInitError_Driver_Failed;
-        }
-
-        u_long mode = 1;
-        ioctlsocket(sock, FIONBIO, &mode);
 
         hmd = new IPhoneVRHMD();
 
@@ -132,9 +114,25 @@ public:
                 hmd)) {
             delete hmd;
             hmd = nullptr;
-            closesocket(sock);
-            sock = INVALID_SOCKET;
             return vr::VRInitError_Driver_Failed;
+        }
+
+        // Try to open the gyro socket after registering the HMD.
+        // Failure here is non-fatal: the HMD remains available.
+        sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (sock != INVALID_SOCKET) {
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            addr.sin_port = htons(DRIVER_PORT);
+
+            if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
+                closesocket(sock);
+                sock = INVALID_SOCKET;
+            } else {
+                u_long mode = 1;
+                ioctlsocket(sock, FIONBIO, &mode);
+            }
         }
 
         return vr::VRInitError_None;
@@ -183,7 +181,7 @@ public:
 
             buffer[count] = '\0';
 
-            float yaw, pitch, roll;
+            float yaw = 0.0f, pitch = 0.0f, roll = 0.0f;
             if (sscanf_s(buffer, "%f,%f,%f", &yaw, &pitch, &roll) != 3)
                 continue;
 
