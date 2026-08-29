@@ -25,6 +25,7 @@ public:
         props->SetStringProperty(propertyContainer, vr::Prop_SerialNumber_String, "iPhoneVR-001");
         props->SetStringProperty(propertyContainer, vr::Prop_RenderModelName_String, "generic_hmd");
         props->SetBoolProperty(propertyContainer, vr::Prop_WillDriftInYaw_Bool, false);
+        props->SetBoolProperty(propertyContainer, vr::Prop_DeviceIsWireless_Bool, true);
         props->SetFloatProperty(propertyContainer, vr::Prop_UserIpdMeters_Float, 0.063f);
         props->SetUint64Property(propertyContainer, vr::Prop_CurrentUniverseId_Uint64, 1);
         return vr::VRInitError_None;
@@ -38,22 +39,31 @@ public:
     vr::DriverPose_t GetPose() override {
         std::lock_guard<std::mutex> lock(mutex);
         vr::DriverPose_t pose{};
+        pose.poseTimeOffset = 0.0;
+        pose.qWorldFromDriverRotation = {1,0,0,0};
+        pose.qDriverFromHeadRotation = {1,0,0,0};
+        pose.vecWorldFromDriverTranslation[0] = 0.0;
+        pose.vecWorldFromDriverTranslation[1] = 0.0;
+        pose.vecWorldFromDriverTranslation[2] = 0.0;
+        pose.vecDriverFromHeadTranslation[0] = 0.0;
+        pose.vecDriverFromHeadTranslation[1] = 0.0;
+        pose.vecDriverFromHeadTranslation[2] = 0.0;
+        pose.vecVelocity[0] = pose.vecVelocity[1] = pose.vecVelocity[2] = 0.0;
+        pose.vecAngularVelocity[0] = pose.vecAngularVelocity[1] = pose.vecAngularVelocity[2] = 0.0;
+        pose.qRotation = quaternion;
         pose.result = vr::TrackingResult_Running_OK;
         pose.poseIsValid = true;
         pose.deviceIsConnected = true;
         pose.willDriftInYaw = false;
         pose.shouldApplyHeadModel = false;
-        pose.qWorldFromDriverRotation = {1,0,0,0};
-        pose.qDriverFromHeadRotation = {1,0,0,0};
-        pose.qRotation = quaternion;
         return pose;
     }
 
     void SetAngles(float y, float p, float r) {
         std::lock_guard<std::mutex> lock(mutex);
-        yaw = y * kPi / 180.0f;
-        pitch = p * kPi / 180.0f;
-        roll = r * kPi / 180.0f;
+        const float yaw = y * kPi / 180.0f;
+        const float pitch = p * kPi / 180.0f;
+        const float roll = r * kPi / 180.0f;
         const float cy = cosf(yaw * 0.5f), sy = sinf(yaw * 0.5f);
         const float cp = cosf(pitch * 0.5f), sp = sinf(pitch * 0.5f);
         const float cr = cosf(roll * 0.5f), sr = sinf(roll * 0.5f);
@@ -68,7 +78,6 @@ public:
 private:
     vr::TrackedDeviceIndex_t objectId = vr::k_unTrackedDeviceIndexInvalid;
     vr::PropertyContainerHandle_t propertyContainer = vr::k_ulInvalidPropertyContainer;
-    float yaw = 0, pitch = 0, roll = 0;
     vr::HmdQuaternion_t quaternion{1,0,0,0};
     mutable std::mutex mutex;
 };
@@ -121,7 +130,7 @@ public:
             float y, p, r;
             if (sscanf_s(buf, "%f,%f,%f", &y, &p, &r) == 3) {
                 hmd->SetAngles(y, p, r);
-                const vr::TrackedDeviceIndex_t id = hmd->GetObjectId();
+                const auto id = hmd->GetObjectId();
                 if (id != vr::k_unTrackedDeviceIndexInvalid) {
                     vr::DriverPose_t pose = hmd->GetPose();
                     vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id, pose, sizeof(pose));
