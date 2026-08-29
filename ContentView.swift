@@ -23,8 +23,6 @@ struct ContentView: View {
                             .background(.black.opacity(0.65))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                         Spacer()
-                        Button("MERKEZLE") { client.center() }
-                            .buttonStyle(.borderedProminent)
                         Button("×") {
                             client.stop()
                             running = false
