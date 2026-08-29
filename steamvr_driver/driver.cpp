@@ -11,7 +11,7 @@
 
 #pragma comment(lib, "Ws2_32.lib")
 
-static constexpr unsigned short kPort = 8766;
+static constexpr unsigned short kPort = 8767;
 static constexpr float kPi = 3.14159265358979323846f;
 
 class IPhoneVRHMD final : public vr::ITrackedDeviceServerDriver {
@@ -85,7 +85,7 @@ public:
         ioctlsocket(sock, FIONBIO, &nonblock);
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
-        addr.sin_addr.s_addr = htonl(INADDR_ANY);
+        addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         addr.sin_port = htons(kPort);
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
             closesocket(sock); sock = INVALID_SOCKET; WSACleanup();
