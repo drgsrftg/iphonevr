@@ -92,9 +92,10 @@ mouse_lock = threading.Lock()
 last_yaw = None
 last_pitch = None
 
-# DOĞRU EKSEN EŞLEŞMESİ:
-# Yaw   -> Mouse X = sağ / sol
-# Pitch -> Mouse Y = yukarı / aşağı
+# TELEFON YATAY HAREKET -> MOUSE YATAY
+# TELEFON DIKEY HAREKET -> MOUSE DIKEY
+# Uygulamanin gonderdigi sensor eksenleri ters oldugu icin burada
+# fiziksel hareketi dogru mouse eksenine map ediyoruz.
 def update_mouse(yaw, pitch):
     global last_yaw, last_pitch
     with mouse_lock:
@@ -102,7 +103,6 @@ def update_mouse(yaw, pitch):
             last_yaw = yaw
             last_pitch = pitch
             return
-
         dyaw = yaw - last_yaw
         dpitch = pitch - last_pitch
         last_yaw = yaw
@@ -113,9 +113,11 @@ def update_mouse(yaw, pitch):
     if abs(dpitch) < MOUSE_DEADZONE:
         dpitch = 0.0
 
-    # Yaw = yatay, Pitch = dikey
-    dx = round(-dyaw * MOUSE_SENSITIVITY)
-    dy = round(-dpitch * MOUSE_VERTICAL_SENSITIVITY)
+    # ONEMLI: EKSENLER SWAP EDILDI.
+    # Telefonun sag/sol hareketi Pitch'ten geliyor -> mouse Y.
+    # Telefonun yukari/asagi hareketi Yaw'dan geliyor -> mouse X.
+    dx = round(-dpitch * MOUSE_SENSITIVITY)
+    dy = round(-dyaw * MOUSE_VERTICAL_SENSITIVITY)
     move_mouse(dx, dy)
 
 def reset_mouse_reference():
@@ -141,7 +143,7 @@ def sensor_connect(phone_ip):
                 sensor_socket = sock
             reset_mouse_reference()
             print("[SENSOR] iPhone TCP 5555 bağlandı")
-            print("[MOUSE] Yaw = X (sağ/sol) | Pitch = Y (yukarı/aşağı)")
+            print("[MOUSE] Telefon yatay -> Mouse Y | Telefon dikey -> Mouse X")
             receive_sensor(sock)
             return
         except Exception as exc:
@@ -244,8 +246,8 @@ def main():
     print(f"CAPTURE FPS : {CAPTURE_FPS}")
     print(f"EYE         : {EYE_WIDTH}x{EYE_HEIGHT}")
     print(f"MOUSE       : {'AKTİF' if mouse_enabled else 'KAPALI'}")
-    print("MOUSE X     : Yaw (sağ/sol)")
-    print("MOUSE Y     : Pitch (yukarı/aşağı)")
+    print("MOUSE MAP   : Telefon yatay -> Mouse Y")
+    print("MOUSE MAP   : Telefon dikey -> Mouse X")
     print("\nTelefon bekleniyor...\n")
     threading.Thread(target=capture_loop, daemon=True).start()
     video = VideoServer()
