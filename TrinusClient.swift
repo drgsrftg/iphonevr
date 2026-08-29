@@ -14,6 +14,7 @@ final class TrinusClient: ObservableObject {
     private var video: NWConnection?
     private var sensorListener: NWListener?
     private var sensorConnection: NWConnection?
+    private var frameTimer: DispatchSourceTimer?
     private var running = false
     private var host = ""
 
@@ -27,38 +28,49 @@ final class TrinusClient: ObservableObject {
     func start(ip: String) {
         stop(silent: true)
         host = ip.trimmingCharacters(in: .whitespacesAndNewlines)
+
         guard !host.isEmpty else {
             status = "PC IP adresi gerekli"
             return
         }
+
         running = true
         status = "iPhoneVR UDP'ye bağlanıyor..."
+
         connectVideoUDP()
         startSensorServer()
         startMotion()
     }
 
-    func stop() { stop(silent: false) }
+    func stop() {
+        stop(silent: false)
+    }
 
     private func stop(silent: Bool) {
         running = false
+
+        frameTimer?.cancel()
+        frameTimer = nil
+
         video?.cancel()
         sensorConnection?.cancel()
         sensorListener?.cancel()
+
         video = nil
         sensorConnection = nil
         sensorListener = nil
+
         motion.stopDeviceMotionUpdates()
+
         if !silent {
-            DispatchQueue.main.async { self.status = "Durduruldu" }
+            DispatchQueue.main.async {
+                self.status = "Durduruldu"
+                self.image = nil
+            }
         }
     }
 
-    // =====================================================
-    // UDP VIDEO 7777
-    // Server packet = 4-byte big-endian JPEG length + JPEG.
-    // One complete JPEG is sent in every UDP datagram.
-    // =====================================================
+    // MARK: - VIDEO UDP 7777
 
     private func connectVideoUDP() {
         let connection = NWConnection(
@@ -66,23 +78,30 @@ final class TrinusClient: ObservableObject {
             port: videoPort,
             using: .udp
         )
+
         video = connection
 
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
-            DispatchQueue.main.async {
-                switch state {
-                case .ready:
-                    self.status = "iPhoneVR UDP 7777 hazır"
-                    self.sendUDPSettings()
-                    self.requestFrame()
-                case .failed(let error):
-                    self.status = "UDP hata: \(error.localizedDescription)"
-                case .waiting(let error):
-                    self.status = "UDP bekleniyor: \(error.localizedDescription)"
-                default:
-                    break
+
+            switch state {
+            case .ready:
+                DispatchQueue.main.async {
+                    guard self.running else { return }
+                    self.status = "iPhoneVR UDP 7777 bağlı"
                 }
+
+                self.sendUDPSettings()
+                self.startFrameRequests()
+
+            case .failed(let error):
+                self.failVideo("UDP hata: \(error.localizedDescription)")
+
+            case .waiting(let error):
+                self.failVideo("UDP bekleniyor: \(error.localizedDescription)")
+
+            default:
+                break
             }
         }
 
@@ -91,6 +110,8 @@ final class TrinusClient: ObservableObject {
     }
 
     private func sendUDPSettings() {
+        guard running else { return }
+
         let settings: [String: Any] = [
             "version": "std2",
             "videostream": "mjpeg",
@@ -119,13 +140,38 @@ final class TrinusClient: ObservableObject {
         }
     }
 
+    // Sürekli frame istemek, UDP'de tek bir paketin kaybolması halinde
+    // görüntünün ilk karede takılı kalmasını engeller.
+    private func startFrameRequests() {
+        frameTimer?.cancel()
+
+        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .userInteractive))
+        frameTimer = timer
+
+        timer.schedule(
+            deadline: .now(),
+            repeating: .milliseconds(33),
+            leeway: .milliseconds(2)
+        )
+
+        timer.setEventHandler { [weak self] in
+            self?.requestFrame()
+        }
+
+        timer.resume()
+    }
+
     private func requestFrame() {
-        guard running else { return }
-        video?.send(content: Data([0x65]), completion: .contentProcessed { [weak self] error in
-            if let error {
-                self?.failVideo("Frame isteği gönderilemedi: \(error.localizedDescription)")
+        guard running, let video else { return }
+
+        video.send(
+            content: Data([0x65]),
+            completion: .contentProcessed { [weak self] error in
+                if let error {
+                    self?.failVideo("Frame isteği gönderilemedi: \(error.localizedDescription)")
+                }
             }
-        })
+        )
     }
 
     private func receiveUDP() {
@@ -140,18 +186,17 @@ final class TrinusClient: ObservableObject {
                 self.handleVideoDatagram(data)
             }
 
-            // Re-arm immediately so every frame is received.
             self.receiveUDP()
         }
     }
 
     private func handleVideoDatagram(_ data: Data) {
-        // JSON is only handshake/control data.
+        // Server'ın JSON handshake/control cevabı.
         if data.first == UInt8(ascii: "{") {
             return
         }
 
-        guard data.count >= 5 else { return }
+        guard data.count >= 4 else { return }
 
         let jpegLength =
             (Int(data[0]) << 24) |
@@ -159,6 +204,7 @@ final class TrinusClient: ObservableObject {
             (Int(data[2]) << 8) |
             Int(data[3])
 
+        // Bu server tek UDP datagramında 4-byte uzunluk + JPEG gönderiyor.
         guard jpegLength > 0,
               jpegLength <= data.count - 4 else {
             return
@@ -172,25 +218,27 @@ final class TrinusClient: ObservableObject {
             return
         }
 
-        guard let decoded = UIImage(data: jpeg) else { return }
+        guard let decoded = UIImage(data: jpeg) else {
+            return
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self, self.running else { return }
             self.image = decoded
             self.status = "iPhoneVR bağlı • görüntü + sensör"
         }
-
-        requestFrame()
     }
 
     private func failVideo(_ message: String) {
         guard running else { return }
-        DispatchQueue.main.async { self.status = message }
+        DispatchQueue.main.async {
+            if self.running {
+                self.status = message
+            }
+        }
     }
 
-    // =====================================================
-    // SENSOR TCP 5555
-    // =====================================================
+    // MARK: - SENSOR TCP 5555
 
     private func startSensorServer() {
         do {
@@ -199,6 +247,7 @@ final class TrinusClient: ObservableObject {
 
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
+
                 if case .failed(let error) = state {
                     DispatchQueue.main.async {
                         if self.running {
@@ -221,7 +270,9 @@ final class TrinusClient: ObservableObject {
                     guard let self else { return }
                     if case .ready = state {
                         DispatchQueue.main.async {
-                            if self.running { self.status = "Sensör bağlı" }
+                            if self.running {
+                                self.status = "Sensör bağlı"
+                            }
                         }
                     }
                 }
@@ -235,25 +286,30 @@ final class TrinusClient: ObservableObject {
         }
     }
 
-    // =====================================================
-    // MOTION
-    // =====================================================
+    // MARK: - MOTION
 
     private func startMotion() {
         guard motion.isDeviceMotionAvailable else {
-            DispatchQueue.main.async { self.status = "DeviceMotion kullanılamıyor" }
+            DispatchQueue.main.async {
+                self.status = "DeviceMotion kullanılamıyor"
+            }
             return
         }
 
         motion.deviceMotionUpdateInterval = 1.0 / 60.0
+
         motion.startDeviceMotionUpdates(
             using: .xArbitraryCorrectedZVertical,
             to: OperationQueue()
         ) { [weak self] dm, error in
-            guard let self, let dm, self.running, error == nil else { return }
+            guard let self,
+                  let dm,
+                  self.running,
+                  error == nil else { return }
 
             let a = dm.attitude
             let q = a.quaternion
+
             let y = a.yaw - self.cy
             let p = a.pitch - self.cp
             let r = a.roll - self.cr
@@ -281,7 +337,7 @@ final class TrinusClient: ObservableObject {
         quaternion q: CMQuaternion,
         accel: CMAcceleration
     ) {
-        guard running, sensorConnection != nil else { return }
+        guard running, let sensorConnection else { return }
 
         var packet = Data()
         packet.reserveCapacity(53)
@@ -301,12 +357,18 @@ final class TrinusClient: ObservableObject {
         appendFloatLE(&packet, Float(accel.z))
 
         guard packet.count == 53 else { return }
-        sensorConnection?.send(content: packet, completion: .contentProcessed { _ in })
+
+        sensorConnection.send(
+            content: packet,
+            completion: .contentProcessed { _ in }
+        )
     }
 
     private func appendFloatLE(_ data: inout Data, _ value: Float) {
         var bits = value.bitPattern.littleEndian
-        withUnsafeBytes(of: &bits) { data.append(contentsOf: $0) }
+        withUnsafeBytes(of: &bits) {
+            data.append(contentsOf: $0)
+        }
     }
 
     func center() {
