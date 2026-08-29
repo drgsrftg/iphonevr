@@ -15,12 +15,15 @@ jobs:
         run: |
           git clone --depth 1 https://github.com/ValveSoftware/openvr.git openvr
 
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Build driver
         shell: cmd
         working-directory: steamvr_driver
         run: |
-          call "%ProgramFiles%\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-          if errorlevel 1 exit /b 1
           if not exist bin\win64 mkdir bin\win64
           cl /nologo /std:c++17 /EHsc /LD /I ..\openvr\headers driver.cpp /link /OUT:bin\win64\driver_iPhoneVR.dll Ws2_32.lib
 
