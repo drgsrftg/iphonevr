@@ -19,10 +19,9 @@ MAX_UDP_SIZE = 60000
 EYE_WIDTH = 540
 EYE_HEIGHT = 500
 MOUSE_SENSITIVITY = 950.0
-MOUSE_VERTICAL_SENSITIVITY = 1400.0
+MOUSE_VERTICAL_SENSITIVITY = 1100.0
 MOUSE_DEADZONE = 0.0005
 MAX_MOUSE_STEP = 45
-
 mouse_enabled = sys.platform.startswith("win")
 
 if mouse_enabled:
@@ -36,7 +35,6 @@ if mouse_enabled:
     INPUT_MOUSE = 0
     MOUSEEVENTF_MOVE = 0x0001
 
-
 def move_mouse(dx, dy):
     if not mouse_enabled:
         return
@@ -47,13 +45,11 @@ def move_mouse(dx, dy):
     inp = INPUT(type=INPUT_MOUSE, mi=MOUSEINPUT(dx=dx, dy=dy, mouseData=0, dwFlags=MOUSEEVENTF_MOVE, time=0, dwExtraInfo=None))
     ctypes.windll.user32.SendInput(1, ctypes.byref(inp), ctypes.sizeof(INPUT))
 
-
 sct = mss.mss()
 monitor = sct.monitors[1]
 latest_frame = None
 frame_lock = threading.Lock()
 capture_running = True
-
 
 def encode_frame(frame):
     eye = cv2.resize(frame, (EYE_WIDTH, EYE_HEIGHT), interpolation=cv2.INTER_AREA)
@@ -68,7 +64,6 @@ def encode_frame(frame):
             return data
         quality -= 5
     return None
-
 
 def capture_loop():
     global latest_frame
@@ -90,60 +85,44 @@ def capture_loop():
         if remaining > 0:
             time.sleep(remaining)
 
-
 sensor_socket = None
 sensor_lock = threading.Lock()
 sensor_buffer = bytearray()
 mouse_lock = threading.Lock()
 last_yaw = None
-last_q = None
-
-
-def normalize_q(x, y, z, w):
-    n = math.sqrt(x*x + y*y + z*z + w*w)
-    if n < 1e-8:
-        return 0.0, 0.0, 0.0, 1.0
-    return x/n, y/n, z/n, w/n
-
-
-def update_mouse(yaw, qx, qy, qz, qw):
-    global last_yaw, last_q
-    q = normalize_q(qx, qy, qz, qw)
-    with mouse_lock:
-        if last_yaw is None or last_q is None:
-            last_yaw = yaw
-            last_q = q
-            return
-        oldx, oldy, oldz, oldw = last_q
-        # q_delta = inverse(old) * current
-        x = oldw*q[0] - oldx*q[3] - oldy*q[2] + oldz*q[1]
-        y = oldw*q[1] + oldx*q[2] - oldy*q[3] - oldz*q[0]
-        z = oldw*q[2] - oldx*q[1] + oldy*q[0] - oldz*q[3]
-        w = oldw*q[3] + oldx*q[0] + oldy*q[1] + oldz*q[2]
-        x, y, z, w = normalize_q(x, y, z, w)
-        if w < 0:
-            x, y, z, w = -x, -y, -z, -w
-        dyaw = yaw - last_yaw
-        if dyaw > math.pi:
-            dyaw -= 2*math.pi
-        elif dyaw < -math.pi:
-            dyaw += 2*math.pi
-        last_yaw = yaw
-        last_q = q
-
-    # Local X rotation is the VR headset up/down rotation.
-    angle_x = 2.0 * math.atan2(x, max(1e-8, w))
-    dx = 0 if abs(dyaw) < MOUSE_DEADZONE else round(-dyaw * MOUSE_SENSITIVITY)
-    dy = 0 if abs(angle_x) < MOUSE_DEADZONE else round(-angle_x * MOUSE_VERTICAL_SENSITIVITY)
-    move_mouse(dx, dy)
-
+last_vertical = None
 
 def reset_mouse_reference():
-    global last_yaw, last_q
+    global last_yaw, last_vertical
     with mouse_lock:
         last_yaw = None
-        last_q = None
+        last_vertical = None
 
+def update_mouse(yaw, qx, qy, qz, qw):
+    global last_yaw, last_vertical
+    # Yaw is kept exclusively for horizontal movement.
+    # For this phone orientation, vertical rotation is the quaternion Y/W pair.
+    vertical = math.atan2(-qy, qw)
+    with mouse_lock:
+        if last_yaw is None or last_vertical is None:
+            last_yaw = yaw
+            last_vertical = vertical
+            return
+        dyaw = yaw - last_yaw
+        if dyaw > math.pi:
+            dyaw -= 2.0 * math.pi
+        elif dyaw < -math.pi:
+            dyaw += 2.0 * math.pi
+        dvertical = vertical - last_vertical
+        if dvertical > math.pi:
+            dvertical -= 2.0 * math.pi
+        elif dvertical < -math.pi:
+            dvertical += 2.0 * math.pi
+        last_yaw = yaw
+        last_vertical = vertical
+    dx = 0 if abs(dyaw) < MOUSE_DEADZONE else round(-dyaw * MOUSE_SENSITIVITY)
+    dy = 0 if abs(dvertical) < MOUSE_DEADZONE else round(-dvertical * MOUSE_VERTICAL_SENSITIVITY)
+    move_mouse(dx, dy)
 
 def sensor_connect(phone_ip):
     global sensor_socket
@@ -162,7 +141,7 @@ def sensor_connect(phone_ip):
                 sensor_socket = sock
             reset_mouse_reference()
             print("[SENSOR] iPhone TCP 5555 bağlandı")
-            print("[MOUSE] Yaw = sağ/sol | Quaternion X = yukarı/aşağı")
+            print("[MOUSE] Yaw = sağ/sol | QY/QW = yukarı/aşağı")
             receive_sensor(sock)
             return
         except Exception as exc:
@@ -171,7 +150,6 @@ def sensor_connect(phone_ip):
                 try: sock.close()
                 except OSError: pass
             time.sleep(2)
-
 
 def receive_sensor(sock):
     global sensor_socket
@@ -197,7 +175,6 @@ def receive_sensor(sock):
     try: sock.close()
     except OSError: pass
 
-
 def parse_sensor(data):
     if len(data) != 53:
         return
@@ -208,7 +185,6 @@ def parse_sensor(data):
         print("\r" + f"[SENSOR] Yaw:{yaw:+.3f} Pitch:{pitch:+.3f} Roll:{roll:+.3f} Q:{qx:+.2f},{qy:+.2f},{qz:+.2f},{qw:+.2f}", end="", flush=True)
     except Exception as exc:
         print(f"\n[SENSOR] Parse hatası: {exc}")
-
 
 class VideoServer:
     def __init__(self):
@@ -258,7 +234,6 @@ class VideoServer:
         try: self.sock.close()
         except OSError: pass
 
-
 def main():
     global capture_running
     print("\n======================================")
@@ -270,7 +245,7 @@ def main():
     print(f"EYE         : {EYE_WIDTH}x{EYE_HEIGHT}")
     print(f"MOUSE       : {'AKTİF' if mouse_enabled else 'KAPALI'}")
     print("MOUSE X     : Yaw")
-    print("MOUSE Y     : Quaternion X")
+    print("MOUSE Y     : QY/QW")
     print("\nTelefon bekleniyor...\n")
     threading.Thread(target=capture_loop, daemon=True).start()
     video = VideoServer()
@@ -287,7 +262,6 @@ def main():
             try: sock.close()
             except OSError: pass
         print("\nServer kapandı.")
-
 
 if __name__ == "__main__":
     main()
