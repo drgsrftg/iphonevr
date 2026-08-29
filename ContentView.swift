@@ -12,10 +12,11 @@ final class MotionManager: ObservableObject {
     @Published var roll = 0.0
     @Published var connected = false
 
+    private let gyroPort: NWEndpoint.Port = 1533
+
     func start(ip: String) {
         stop()
-        guard let port = NWEndpoint.Port(rawValue: 8766) else { return }
-        connection = NWConnection(host: NWEndpoint.Host(ip), port: port, using: .udp)
+        connection = NWConnection(host: NWEndpoint.Host(ip), port: gyroPort, using: .udp)
         connection?.stateUpdateHandler = { [weak self] state in
             DispatchQueue.main.async { self?.connected = state == .ready }
         }
@@ -30,7 +31,9 @@ final class MotionManager: ObservableObject {
             let pitch = asin(max(-1, min(1, 2 * (q.w * q.y - q.z * q.x)))) * 180 / .pi
             let roll = atan2(2 * (q.w * q.x + q.y * q.z), 1 - 2 * (q.x * q.x + q.y * q.y)) * 180 / .pi
             DispatchQueue.main.async {
-                self.yaw = yaw; self.pitch = pitch; self.roll = roll
+                self.yaw = yaw
+                self.pitch = pitch
+                self.roll = roll
             }
             let packet = String(format: "%.3f,%.3f,%.3f", yaw, pitch, roll)
             self.connection?.send(content: packet.data(using: .utf8), completion: .contentProcessed { _ in })
@@ -93,7 +96,7 @@ struct ContentView: View {
                         .textFieldStyle(.roundedBorder)
                         .keyboardType(.numbersAndPunctuation)
                         .frame(maxWidth: 300)
-                    Text(motion.connected ? "● GYRO BAĞLI" : "○ GYRO BEKLENİYOR")
+                    Text(motion.connected ? "● GYRO BAĞLI • UDP 1533" : "○ GYRO BEKLENİYOR • UDP 1533")
                         .foregroundStyle(motion.connected ? .green : .orange)
                     Button("VR'YI BAŞLAT") {
                         motion.start(ip: ip)
