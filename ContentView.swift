@@ -92,13 +92,17 @@ struct ContentView: View {
             let height = cg.height
             let half = width / 2
 
-            let rect: CGRect
-            switch side {
-            case .left:
-                rect = CGRect(x: 0, y: 0, width: half, height: height)
-            case .right:
-                rect = CGRect(x: half, y: 0, width: width - half, height: height)
-            }
+            // IMPORTANT: keep all geometry calculations outside the ViewBuilder.
+            // SwiftUI's ViewBuilder cannot contain assignments such as
+            // `rect = ...` inside its body.
+            let cropX = side == .left ? 0 : half
+            let cropWidth = side == .left ? half : width - half
+            let rect = CGRect(
+                x: cropX,
+                y: 0,
+                width: cropWidth,
+                height: height
+            )
 
             if let cropped = cg.cropping(to: rect) {
                 Image(uiImage: UIImage(
@@ -111,6 +115,7 @@ struct ContentView: View {
                 .clipped()
             } else {
                 Color.black
+                    .frame(width: size.width, height: size.height)
             }
         } else {
             Color.black
