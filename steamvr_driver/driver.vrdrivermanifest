@@ -1,4 +1,5 @@
 {
+  "alwaysActivate": true,
   "name": "iphonevr",
   "resourceOnly": false,
   "hmd_presence": [
