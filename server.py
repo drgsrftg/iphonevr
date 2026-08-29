@@ -92,8 +92,9 @@ mouse_lock = threading.Lock()
 last_yaw = None
 last_pitch = None
 
-# Mouse eksenleri bilinçli olarak SWAP edildi.
-# Pitch -> X (sağ/sol), Yaw -> Y (yukarı/aşağı).
+# DOĞRU EKSEN EŞLEŞMESİ:
+# Yaw   -> Mouse X = sağ / sol
+# Pitch -> Mouse Y = yukarı / aşağı
 def update_mouse(yaw, pitch):
     global last_yaw, last_pitch
     with mouse_lock:
@@ -112,11 +113,9 @@ def update_mouse(yaw, pitch):
     if abs(dpitch) < MOUSE_DEADZONE:
         dpitch = 0.0
 
-    # SWAP:
-    # Telefon pitch hareketi -> mouse X
-    # Telefon yaw hareketi   -> mouse Y
-    dx = round(-dpitch * MOUSE_SENSITIVITY)
-    dy = round(-dyaw * MOUSE_VERTICAL_SENSITIVITY)
+    # Yaw = yatay, Pitch = dikey
+    dx = round(-dyaw * MOUSE_SENSITIVITY)
+    dy = round(-dpitch * MOUSE_VERTICAL_SENSITIVITY)
     move_mouse(dx, dy)
 
 def reset_mouse_reference():
@@ -142,7 +141,7 @@ def sensor_connect(phone_ip):
                 sensor_socket = sock
             reset_mouse_reference()
             print("[SENSOR] iPhone TCP 5555 bağlandı")
-            print("[MOUSE] Pitch = X (sağ/sol) | Yaw = Y (yukarı/aşağı)")
+            print("[MOUSE] Yaw = X (sağ/sol) | Pitch = Y (yukarı/aşağı)")
             receive_sensor(sock)
             return
         except Exception as exc:
@@ -245,8 +244,8 @@ def main():
     print(f"CAPTURE FPS : {CAPTURE_FPS}")
     print(f"EYE         : {EYE_WIDTH}x{EYE_HEIGHT}")
     print(f"MOUSE       : {'AKTİF' if mouse_enabled else 'KAPALI'}")
-    print("MOUSE X     : Pitch (SWAP)")
-    print("MOUSE Y     : Yaw (SWAP)")
+    print("MOUSE X     : Yaw (sağ/sol)")
+    print("MOUSE Y     : Pitch (yukarı/aşağı)")
     print("\nTelefon bekleniyor...\n")
     threading.Thread(target=capture_loop, daemon=True).start()
     video = VideoServer()
