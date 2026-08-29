@@ -11,23 +11,16 @@ struct ContentView: View {
 
             if running {
                 GeometryReader { geometry in
-                    HStack(spacing: 0) {
-                        eye(side: .left, size: CGSize(
-                            width: geometry.size.width / 2,
-                            height: geometry.size.height
-                        ))
+                    let screen = geometry.size
 
-                        eye(side: .right, size: CGSize(
-                            width: geometry.size.width / 2,
-                            height: geometry.size.height
-                        ))
+                    HStack(spacing: 0) {
+                        eye(side: .left, size: CGSize(width: screen.width / 2, height: screen.height))
+                        eye(side: .right, size: CGSize(width: screen.width / 2, height: screen.height))
                     }
-                    .frame(
-                        width: geometry.size.width,
-                        height: geometry.size.height
-                    )
+                    .frame(width: screen.width, height: screen.height)
+                    .clipped()
                 }
-                .ignoresSafeArea(.all)
+                .ignoresSafeArea(.container, edges: .all)
 
                 VStack {
                     HStack {
@@ -47,7 +40,6 @@ struct ContentView: View {
                     Spacer()
                 }
                 .padding(12)
-                .ignoresSafeArea(.all)
             } else {
                 VStack(spacing: 18) {
                     Text("iPhoneVR")
@@ -91,12 +83,9 @@ struct ContentView: View {
             let width = cg.width
             let height = cg.height
             let half = width / 2
-
-            // IMPORTANT: keep all geometry calculations outside the ViewBuilder.
-            // SwiftUI's ViewBuilder cannot contain assignments such as
-            // `rect = ...` inside its body.
             let cropX = side == .left ? 0 : half
             let cropWidth = side == .left ? half : width - half
+
             let rect = CGRect(
                 x: cropX,
                 y: 0,
@@ -111,6 +100,7 @@ struct ContentView: View {
                     orientation: image.imageOrientation
                 ))
                 .resizable()
+                .aspectRatio(contentMode: .fill)
                 .frame(width: size.width, height: size.height)
                 .clipped()
             } else {
