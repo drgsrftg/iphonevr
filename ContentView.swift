@@ -7,34 +7,56 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black
+                .ignoresSafeArea()
 
             if running {
                 GeometryReader { geometry in
                     HStack(spacing: 0) {
-                        eye
-                        eye
+                        eye(size: CGSize(
+                            width: geometry.size.width / 2.0,
+                            height: geometry.size.height
+                        ))
+
+                        eye(size: CGSize(
+                            width: geometry.size.width / 2.0,
+                            height: geometry.size.height
+                        ))
                     }
-                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .frame(
+                        width: geometry.size.width,
+                        height: geometry.size.height
+                    )
+                    .clipped()
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .ignoresSafeArea(.all)
 
+                // Only the close button remains. No center button.
                 VStack {
                     HStack {
                         Spacer()
+
                         Button {
                             client.stop()
                             running = false
                         } label: {
                             Image(systemName: "xmark")
-                                .font(.system(size: 16, weight: .bold))
+                                .font(.system(
+                                    size: 16,
+                                    weight: .bold
+                                ))
                                 .foregroundStyle(.white)
-                                .frame(width: 42, height: 42)
-                                .background(.black.opacity(0.55))
+                                .frame(
+                                    width: 42,
+                                    height: 42
+                                )
+                                .background(
+                                    Color.black.opacity(0.55)
+                                )
                                 .clipShape(Circle())
                         }
                     }
+
                     Spacer()
                 }
                 .padding(12)
@@ -44,12 +66,18 @@ struct ContentView: View {
                     Text("iPhoneVR")
                         .font(.largeTitle.bold())
                         .foregroundStyle(.white)
+
                     Text("PC ekranını iPhone'da VR olarak kullan")
                         .foregroundStyle(.gray)
-                    TextField("PC IP adresi", text: $ip)
-                        .textFieldStyle(.roundedBorder)
-                        .keyboardType(.numbersAndPunctuation)
-                        .frame(maxWidth: 320)
+
+                    TextField(
+                        "PC IP adresi",
+                        text: $ip
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .keyboardType(.numbersAndPunctuation)
+                    .frame(maxWidth: 320)
+
                     Button("BAĞLAN") {
                         client.start(ip: ip)
                         running = true
@@ -62,22 +90,27 @@ struct ContentView: View {
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .ignoresSafeArea(.all)
-        .onDisappear { client.stop() }
+        .onDisappear {
+            client.stop()
+        }
     }
 
-    private var eye: some View {
-        GeometryReader { geometry in
-            if let image = client.image {
-                Image(uiImage: image)
-                    .resizable()
-                    // Intentionally stretch to the complete eye viewport.
-                    // No aspect-fit bars and no aspect-fill cropping.
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
-            } else {
-                Color.black
-            }
+    @ViewBuilder
+    private func eye(size: CGSize) -> some View {
+        if let image = client.image {
+            Image(uiImage: image)
+                .resizable()
+                .frame(
+                    width: size.width,
+                    height: size.height
+                )
+                .clipped()
+        } else {
+            Color.black
+                .frame(
+                    width: size.width,
+                    height: size.height
+                )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
