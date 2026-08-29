@@ -22,6 +22,7 @@ MOUSE_SENSITIVITY = 950.0
 MOUSE_VERTICAL_SENSITIVITY = 1100.0
 MOUSE_DEADZONE = 0.0005
 MAX_MOUSE_STEP = 45
+
 mouse_enabled = sys.platform.startswith("win")
 
 if mouse_enabled:
@@ -90,39 +91,38 @@ sensor_lock = threading.Lock()
 sensor_buffer = bytearray()
 mouse_lock = threading.Lock()
 last_yaw = None
-last_vertical = None
+last_pitch = None
+
+# Headset hareketini iki bağımsız eksene ayırır.
+# Yaw -> X (sağ/sol), Pitch -> Y (yukarı/aşağı).
+def update_mouse(yaw, pitch):
+    global last_yaw, last_pitch
+    with mouse_lock:
+        if last_yaw is None or last_pitch is None:
+            last_yaw = yaw
+            last_pitch = pitch
+            return
+
+        dyaw = yaw - last_yaw
+        dpitch = pitch - last_pitch
+        last_yaw = yaw
+        last_pitch = pitch
+
+    # Çok küçük sensör titreşimlerini yok et.
+    if abs(dyaw) < MOUSE_DEADZONE:
+        dyaw = 0.0
+    if abs(dpitch) < MOUSE_DEADZONE:
+        dpitch = 0.0
+
+    dx = round(-dyaw * MOUSE_SENSITIVITY)
+    dy = round(-dpitch * MOUSE_VERTICAL_SENSITIVITY)
+    move_mouse(dx, dy)
 
 def reset_mouse_reference():
-    global last_yaw, last_vertical
+    global last_yaw, last_pitch
     with mouse_lock:
         last_yaw = None
-        last_vertical = None
-
-def update_mouse(yaw, qx, qy, qz, qw):
-    global last_yaw, last_vertical
-    # Yaw is kept exclusively for horizontal movement.
-    # For this phone orientation, vertical rotation is the quaternion Y/W pair.
-    vertical = math.atan2(-qy, qw)
-    with mouse_lock:
-        if last_yaw is None or last_vertical is None:
-            last_yaw = yaw
-            last_vertical = vertical
-            return
-        dyaw = yaw - last_yaw
-        if dyaw > math.pi:
-            dyaw -= 2.0 * math.pi
-        elif dyaw < -math.pi:
-            dyaw += 2.0 * math.pi
-        dvertical = vertical - last_vertical
-        if dvertical > math.pi:
-            dvertical -= 2.0 * math.pi
-        elif dvertical < -math.pi:
-            dvertical += 2.0 * math.pi
-        last_yaw = yaw
-        last_vertical = vertical
-    dx = 0 if abs(dyaw) < MOUSE_DEADZONE else round(-dyaw * MOUSE_SENSITIVITY)
-    dy = 0 if abs(dvertical) < MOUSE_DEADZONE else round(-dvertical * MOUSE_VERTICAL_SENSITIVITY)
-    move_mouse(dx, dy)
+        last_pitch = None
 
 def sensor_connect(phone_ip):
     global sensor_socket
@@ -141,7 +141,7 @@ def sensor_connect(phone_ip):
                 sensor_socket = sock
             reset_mouse_reference()
             print("[SENSOR] iPhone TCP 5555 bağlandı")
-            print("[MOUSE] Yaw = sağ/sol | QY/QW = yukarı/aşağı")
+            print("[MOUSE] Yaw = sağ/sol | Pitch = yukarı/aşağı")
             receive_sensor(sock)
             return
         except Exception as exc:
@@ -181,7 +181,7 @@ def parse_sensor(data):
     try:
         yaw, pitch, roll = struct.unpack("<3f", data[13:25])
         qx, qy, qz, qw = struct.unpack("<4f", data[25:41])
-        update_mouse(yaw, qx, qy, qz, qw)
+        update_mouse(yaw, pitch)
         print("\r" + f"[SENSOR] Yaw:{yaw:+.3f} Pitch:{pitch:+.3f} Roll:{roll:+.3f} Q:{qx:+.2f},{qy:+.2f},{qz:+.2f},{qw:+.2f}", end="", flush=True)
     except Exception as exc:
         print(f"\n[SENSOR] Parse hatası: {exc}")
@@ -245,7 +245,7 @@ def main():
     print(f"EYE         : {EYE_WIDTH}x{EYE_HEIGHT}")
     print(f"MOUSE       : {'AKTİF' if mouse_enabled else 'KAPALI'}")
     print("MOUSE X     : Yaw")
-    print("MOUSE Y     : QY/QW")
+    print("MOUSE Y     : Pitch")
     print("\nTelefon bekleniyor...\n")
     threading.Thread(target=capture_loop, daemon=True).start()
     video = VideoServer()
