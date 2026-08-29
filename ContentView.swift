@@ -7,8 +7,7 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            Color.black
-                .ignoresSafeArea()
+            Color.black.ignoresSafeArea()
 
             if running {
                 GeometryReader { geometry in
@@ -17,15 +16,13 @@ struct ContentView: View {
                         eye
                     }
                     .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
                 }
-                .ignoresSafeArea()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea(.all)
 
-                // Only the exit control remains; no center button or overlay on the image.
                 VStack {
                     HStack {
                         Spacer()
-
                         Button {
                             client.stop()
                             running = false
@@ -41,21 +38,18 @@ struct ContentView: View {
                     Spacer()
                 }
                 .padding(12)
-                .ignoresSafeArea()
+                .ignoresSafeArea(.all)
             } else {
                 VStack(spacing: 18) {
                     Text("iPhoneVR")
                         .font(.largeTitle.bold())
                         .foregroundStyle(.white)
-
                     Text("PC ekranını iPhone'da VR olarak kullan")
                         .foregroundStyle(.gray)
-
                     TextField("PC IP adresi", text: $ip)
                         .textFieldStyle(.roundedBorder)
                         .keyboardType(.numbersAndPunctuation)
                         .frame(maxWidth: 320)
-
                     Button("BAĞLAN") {
                         client.start(ip: ip)
                         running = true
@@ -67,25 +61,23 @@ struct ContentView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onDisappear {
-            client.stop()
-        }
+        .ignoresSafeArea(.all)
+        .onDisappear { client.stop() }
     }
 
     private var eye: some View {
         GeometryReader { geometry in
-            Group {
-                if let image = client.image {
-                    Image(uiImage: image)
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                } else {
-                    Color.black
-                }
+            if let image = client.image {
+                Image(uiImage: image)
+                    .resizable()
+                    // Intentionally stretch to the complete eye viewport.
+                    // No aspect-fit bars and no aspect-fill cropping.
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
+            } else {
+                Color.black
             }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-            .background(Color.black)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
