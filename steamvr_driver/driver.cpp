@@ -1,9 +1,12 @@
-#include <windows.h>
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 #include <cmath>
 #include <cstring>
-#include <string>
+#include <mutex>
+#include <cstdio>
 #include "openvr_driver.h"
 
 #pragma comment(lib, "Ws2_32.lib")
@@ -18,7 +21,7 @@ public:
         auto props = vr::VRProperties();
         propertyContainer = props->TrackedDeviceToPropertyContainer(objectId);
         props->SetStringProperty(propertyContainer, vr::Prop_TrackingSystemName_String, "iPhoneVR");
-        props->SetStringProperty(propertyContainer, vr::Prop_ModelNumber_String, "iPhone 11 VR");
+        props->SetStringProperty(propertyContainer, vr::Prop_ModelNumber_String, "iPhoneVR HMD");
         props->SetStringProperty(propertyContainer, vr::Prop_SerialNumber_String, "iPhoneVR-001");
         props->SetStringProperty(propertyContainer, vr::Prop_RenderModelName_String, "generic_hmd");
         props->SetBoolProperty(propertyContainer, vr::Prop_WillDriftInYaw_Bool, false);
@@ -29,9 +32,9 @@ public:
 
     void Deactivate() override { objectId = vr::k_unTrackedDeviceIndexInvalid; }
     void EnterStandby() override {}
-    void *GetComponent(const char *pchComponentNameAndVersion) override { return nullptr; }
-    void DebugRequest(const char *pchRequest, char *pchResponseBuffer, uint32_t unResponseBufferSize) override {
-        if (unResponseBufferSize) pchResponseBuffer[0] = '\0';
+    void *GetComponent(const char *) override { return nullptr; }
+    void DebugRequest(const char *, char *response, uint32_t size) override {
+        if (size) response[0] = '\0';
     }
 
     vr::DriverPose_t GetPose() override {
@@ -45,14 +48,6 @@ public:
         pose.shouldApplyHeadModel = false;
         pose.qWorldFromDriverRotation = {1,0,0,0};
         pose.qDriverFromHeadRotation = {1,0,0,0};
-        pose.vecWorldFromDriverTranslation[0] = 0;
-        pose.vecWorldFromDriverTranslation[1] = 0;
-        pose.vecWorldFromDriverTranslation[2] = 0;
-        pose.vecDriverFromHeadTranslation[0] = 0;
-        pose.vecDriverFromHeadTranslation[1] = 0;
-        pose.vecDriverFromHeadTranslation[2] = 0;
-        pose.vecVelocity[0] = pose.vecVelocity[1] = pose.vecVelocity[2] = 0;
-        pose.vecAngularVelocity[0] = pose.vecAngularVelocity[1] = pose.vecAngularVelocity[2] = 0;
         pose.qRotation = quaternion;
         return pose;
     }
@@ -71,14 +66,14 @@ public:
         quaternion.z = cr * cp * sy - sr * sp * cy;
     }
 
-    void SetObjectId(vr::TrackedDeviceIndex_t id) { objectId = id; }
+    vr::TrackedDeviceIndex_t GetObjectId() const { return objectId; }
 
 private:
     vr::TrackedDeviceIndex_t objectId = vr::k_unTrackedDeviceIndexInvalid;
     vr::PropertyContainerHandle_t propertyContainer = vr::k_ulInvalidPropertyContainer;
     float yaw = 0, pitch = 0, roll = 0;
     vr::HmdQuaternion_t quaternion{1,0,0,0};
-    std::mutex mutex;
+    mutable std::mutex mutex;
 };
 
 class IPhoneVRProvider final : public vr::IServerTrackedDeviceProvider {
@@ -96,10 +91,15 @@ public:
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         addr.sin_port = htons(kPort);
         if (bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == SOCKET_ERROR) {
-            closesocket(sock); sock = INVALID_SOCKET; WSACleanup(); return vr::VRInitError_Driver_Failed;
+            closesocket(sock); sock = INVALID_SOCKET; WSACleanup();
+            return vr::VRInitError_Driver_Failed;
         }
         hmd = new IPhoneVRHMD();
-        vr::VRServerDriverHost()->TrackedDeviceAdded("iPhoneVR-HMD", vr::TrackedDeviceClass_HMD, hmd);
+        if (!vr::VRServerDriverHost()->TrackedDeviceAdded("iPhoneVR-HMD", vr::TrackedDeviceClass_HMD, hmd)) {
+            delete hmd; hmd = nullptr;
+            closesocket(sock); sock = INVALID_SOCKET; WSACleanup();
+            return vr::VRInitError_Driver_Failed;
+        }
         return vr::VRInitError_None;
     }
 
@@ -111,21 +111,29 @@ public:
     }
 
     const char * const *GetInterfaceVersions() override { return vr::k_InterfaceVersions; }
+
     void RunFrame() override {
         if (sock == INVALID_SOCKET || !hmd) return;
         char buf[256];
-        sockaddr_in from{}; int fromLen = sizeof(from);
-        int n;
-        while ((n = recvfrom(sock, buf, sizeof(buf)-1, 0, reinterpret_cast<sockaddr*>(&from), &fromLen)) > 0) {
+        sockaddr_in from{};
+        int fromLen = sizeof(from);
+        for (;;) {
+            int n = recvfrom(sock, buf, sizeof(buf)-1, 0,
+                             reinterpret_cast<sockaddr*>(&from), &fromLen);
+            if (n <= 0) break;
             buf[n] = '\0';
-            float y,p,r;
+            float y, p, r;
             if (sscanf_s(buf, "%f,%f,%f", &y, &p, &r) == 3) {
-                hmd->SetAngles(y,p,r);
-                vr::DriverPose_t pose = hmd->GetPose();
-                vr::VRServerDriverHost()->TrackedDevicePoseUpdated(0, pose, sizeof(pose));
+                hmd->SetAngles(y, p, r);
+                const vr::TrackedDeviceIndex_t id = hmd->GetObjectId();
+                if (id != vr::k_unTrackedDeviceIndexInvalid) {
+                    vr::DriverPose_t pose = hmd->GetPose();
+                    vr::VRServerDriverHost()->TrackedDevicePoseUpdated(id, pose, sizeof(pose));
+                }
             }
         }
     }
+
     bool ShouldBlockStandbyMode() override { return false; }
     void EnterStandby() override {}
     void LeaveStandby() override {}
